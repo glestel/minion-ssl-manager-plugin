@@ -252,9 +252,11 @@ class SSLManagerPlugin(BlockingPlugin):
 
             # Get the status of the last scan
             params = {'site_id': target_id, 'plan_name': self.NETWORK_PLAN, 'limit': 1}
-            r = requests.get(self.API_PATH + "/scans", params=params)
 
+            # Sleep to not DOS the API
+            time.sleep(1)
             try:
+                r = requests.get(self.API_PATH + "/scans", params=params)
                 r.raise_for_status()
             except Exception as e:
                 self.schedule_stderr += e.message + "\n"
@@ -281,9 +283,10 @@ class SSLManagerPlugin(BlockingPlugin):
                 continue
 
             # Get issues of the scan
-            r = requests.get(self.API_PATH + "/scans/" + scan_id)
-
+            # Sleep to not DOS the API
+            time.sleep(1)
             try:
+                r = requests.get(self.API_PATH + "/scans/" + scan_id)
                 r.raise_for_status()
             except Exception as e:
                 self.schedule_stderr += e.message + "\n"
