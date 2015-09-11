@@ -4,6 +4,7 @@
 
 from minion.plugins.base import BlockingPlugin
 
+import logging
 import json
 import M2Crypto
 import requests
@@ -40,17 +41,20 @@ class SSLManagerPlugin(BlockingPlugin):
     bare_ip_plan = ""
 
     # Instantiation of output
+    report_dir = "/tmp/artifacts/"
     output_id = str(uuid.uuid4())
     schedule_stdout = ""
     schedule_stderr = ""
+    logger = ""
+    logger_path = report_dir + "logging_" + output_id + ".txt"
 
-    report_dir = "/tmp/artifacts"
 
     def do_run(self):
         # TODO handle l'absence de valeur
         # Get the path to save output
         if 'report_dir' in self.configuration:
             self.report_dir = self.configuration['report_dir']
+            self.logger_path = self.report_dir + "logging_" + self.output_id + ".txt"
 
         # Get the array of names of private CA
         if "internal_pki" in self.configuration:
@@ -78,9 +82,7 @@ class SSLManagerPlugin(BlockingPlugin):
 
         # TODO remove and add failure to mandatory options
         # Get the array of groups to run (mandatory)
-        if "groups" in self.configuration:
-            groups = self.configuration.get('groups')
-        elif False:
+        if False:
             self.schedule_stderr += "No group is specified for the scheduled run\n"
             self.schedule_stderr += "This option is mandatory, and the group need to be valid.\n"
             self._save_artifacts()
@@ -91,6 +93,30 @@ class SSLManagerPlugin(BlockingPlugin):
                 "message": "Plugin Failed : missing email"
             }
             self._finish_with_failure(failure)
+
+        # create logger
+        logger = logging.getLogger()
+        logger.setLevel(logging.DEBUG)
+
+        # create console handler and set level to debug
+        ch = logging.FileHandler(self.logger_path)
+        ch.setLevel(logging.DEBUG)
+
+        # create formatter
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+        # add formatter to ch
+        ch.setFormatter(formatter)
+
+        # add ch to logger
+        logger.addHandler(ch)
+
+        # 'application' code
+        logger.debug('debug message')
+        logger.info('info message')
+        logger.warn('warn message')
+        logger.error('error message')
+        logger.critical('critical message')
 
         # find open services
         self.get_open_tls()
@@ -240,10 +266,10 @@ class SSLManagerPlugin(BlockingPlugin):
         for network in self.target_CIDR:
             # Sleep to not DOS the API
             time.sleep(1)
-            # Get plans associated to the target
-            r = requests.get(self.API_PATH + "/sites?url=" + network)
 
+            # Get plans associated to the target
             try:
+                r = requests.get(self.API_PATH + "/sites?url=" + network)
                 r.raise_for_status()
                 target_id = r.json()['sites'][0]["id"]
             except Exception as e:
@@ -351,6 +377,8 @@ class SSLManagerPlugin(BlockingPlugin):
             with open(stderr_log, 'w+') as f:
                 f.write(self.schedule_stderr)
             output_artifacts.append(stderr_log)
+
+        output_artifacts.append(self.logger_path)
 
         if output_artifacts:
             self.report_artifacts("SSL Manager Output", output_artifacts)
