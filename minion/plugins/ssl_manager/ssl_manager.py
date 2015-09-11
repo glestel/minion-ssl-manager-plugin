@@ -203,7 +203,7 @@ class SSLManagerPlugin(BlockingPlugin):
         # Get certificate
         try:
             cert = ssl.get_server_certificate((ip, 443), ssl_version=ssl.PROTOCOL_TLSv1)
-        except ssl.SSLError as e:
+        except (ssl.SSLError, Exception) as e:
             self.schedule_stderr += 'error while connecting to %s : %s\n' % (ip, e.strerror)
 
             self.failed_ip_list.append((ip, e.strerror))
