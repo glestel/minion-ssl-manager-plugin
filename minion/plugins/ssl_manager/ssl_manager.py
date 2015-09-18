@@ -353,11 +353,18 @@ class SSLManagerPlugin(BlockingPlugin):
             url_list = ["https://" + s for s in url_list]
 
             # Check if the list is certified by corporate
+            triage = False
             for corpo in self.INTERNAL_PKI:
                 if corpo in organization.lower():
                     self.internal_certified_hostname.extend(url_list)
-                else:
-                    self.external_certified_hostname.extend(url_list)
+
+                    # Exit loop
+                    triage = True
+                    break
+
+            # Add target to public list if no match found
+            if not triage:
+                self.external_certified_hostname.extend(url_list)
 
         # Remove extra entries
         self.internal_certified_hostname = list(set(self.internal_certified_hostname))
