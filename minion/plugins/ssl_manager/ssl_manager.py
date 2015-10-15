@@ -8,9 +8,14 @@ import logging
 import json
 import M2Crypto
 import requests
+import socket
 import ssl
+import sys
 import time
+import urlparse
 import uuid
+
+from netaddr import IPNetwork, IPAddress
 
 
 class SSLManagerPlugin(BlockingPlugin):
@@ -48,8 +53,10 @@ class SSLManagerPlugin(BlockingPlugin):
     logger = ""
     logger_path = report_dir + "logging_" + output_id + ".txt"
 
-
     def do_run(self):
+        #reload(sys)
+        #sys.setdefaultencoding('utf8')
+
         # TODO handle l'absence de valeur
         # Get the path to save output
         if 'report_dir' in self.configuration:
@@ -169,34 +176,40 @@ class SSLManagerPlugin(BlockingPlugin):
                 'verification': {'enabled': False, 'value': None}
             }
 
-            res = requests.get(api + '/sites', params={'url': site})
+            try:
+                res = requests.get(api + '/sites', params={'url': site})
+                res_json = res.json()
 
-            res_json = res.json()
-            if res_json['success'] and res_json['sites']:
-                self.schedule_stdout += ('The site : %s already exists, we update it\n' % site)
+                if res_json['success'] and res_json['sites']:
+                    self.schedule_stdout += ('The site : %s already exists, we update it\n' % site)
 
-                site_id = res_json['sites'][0]['id']
-                s['plans'] = list(set(s['plans']) | set(res_json['sites'][0]['plans']))
-                s['groups'] = list(set(s['groups']) | set(res_json['sites'][0]['groups']))
+                    site_id = res_json['sites'][0]['id']
+                    s['plans'] = list(set(s['plans']) | set(res_json['sites'][0]['plans']))
+                    s['groups'] = list(set(s['groups']) | set(res_json['sites'][0]['groups']))
 
-                res = requests.post(api + '/sites/' + site_id,
-                                    headers={'content-type': 'application/json'},
-                                    data=json.dumps(s))
+                    res = requests.post(api + '/sites/' + site_id,
+                                        headers={'content-type': 'application/json'},
+                                        data=json.dumps(s))
 
-                if res.json()['success']:
-                    self.schedule_stdout += 'updated site : %s\n' % site
+                    if res.json()['success']:
+                        self.schedule_stdout += 'updated site : %s\n' % site
+                    else:
+                        self.schedule_stderr += 'error while updating site %s : %s\n' % (site, res.json()['reason'])
+
                 else:
-                    self.schedule_stderr += 'error while updating site %s : %s\n' % (site, res.json()['reason'])
+                    res = requests.post(api + '/sites',
+                                        headers={'content-type': 'application/json'},
+                                        data=json.dumps(s))
+                    if res.json()['success']:
+                        self.schedule_stdout += 'created site : %s\n' % site
+                    else:
+                        self.schedule_stderr += 'error while creating site %s : %s\n' % (site, res.json()['reason'])
 
-            else:
-                res = requests.post(api + '/sites',
-                                    headers={'content-type': 'application/json'},
-                                    data=json.dumps(s))
-                if res.json()['success']:
-                    self.schedule_stdout += 'created site : %s\n' % site
-                else:
-                    self.schedule_stderr += 'error while creating site %s : %s\n' % (site, res.json()['reason'])
-            pass
+            except Exception as e:
+                # TODO log
+
+                self.schedule_stderr += 'error while requesting site %s : %s\n' % (str(site), e.message)
+                continue
 
     def get_names(self, ip):
         names = []
@@ -214,7 +227,10 @@ class SSLManagerPlugin(BlockingPlugin):
         # Get the CommonName
         # Code from M2Crypto test sample
         for entry in x509.get_subject().get_entries_by_nid(M2Crypto.m2.NID_commonName):
-            common_name = entry.get_data().as_text()
+            try:
+                common_name = entry.get_data().as_text()
+            except Exception as e:
+                self.schedule_stderr += 'error while parsing certificate for %s : %s\n' % (ip, e.strerror)
 
             names.append(common_name)
 
@@ -364,13 +380,62 @@ class SSLManagerPlugin(BlockingPlugin):
 
             # Add target to public list if no match found
             if not triage:
-                self.external_certified_hostname.extend(url_list)
+                # Check every url grabbed belongs to specific network
+                for url in url_list:
+                    if self.is_internal(url):
+                        self.external_certified_hostname.append(url)
+                    else:
+                        msg = str("Rejected the target %s and plan because it's not hosted in specific network\n"
+                                  % url)
+                        self.schedule_stderr += msg
 
         # Remove extra entries
         self.internal_certified_hostname = list(set(self.internal_certified_hostname))
         self.external_certified_hostname = list(set(self.external_certified_hostname))
 
+        self.sanitize_urls(self.internal_certified_hostname)
+        self.sanitize_urls(self.external_certified_hostname)
+
+    # Remove non resolving url from list
+    def sanitize_urls(self, url_list):
+        for url in url_list:
+            # Check the site is printable
+            # FIXME sanitize before
+            try:
+                url.decode('utf8')
+            except UnicodeDecodeError:
+                url_list.remove(url)
+                continue
+
+            # Check every url grabbed belongs to specific network
+            if not self.is_internal(url):
+                msg = str("Rejected the target %s and plan because it's not hosted in specific network\n"
+                          % url)
+                self.schedule_stderr += msg
+
+                url_list.remove(url)
+
+    # Check if the ip resolving for given target belongs to networks defined in target_CIDR
+    # If target doesn't resolve, returns True to keep track of the host
+    def is_internal(self, target):
+        # Clean the target
+        host = urlparse.urlparse(target).hostname
+
+        # Get the ip of the target
+        try:
+            hostname, null, [target_ip] = socket.gethostbyaddr(host)
+        except Exception as e:
+            return True
+
+        # Check if the IP belongs to internal network
+        for network in self.target_CIDR:
+            ip_range = IPNetwork(network)
+
+            if IPAddress(target_ip) in ip_range:
+                return True
+
     # Function used to save output of the plugin
+    # Must be called before shutting down the plugin
     def _save_artifacts(self):
         stdout_log = self.report_dir + "STDOUT_" + self.output_id + ".txt"
         stderr_log = self.report_dir + "STDERR_" + self.output_id + ".txt"
